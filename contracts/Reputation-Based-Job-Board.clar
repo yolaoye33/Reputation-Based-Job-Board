@@ -10,6 +10,10 @@
 (define-constant ERR_CANNOT_RATE_SELF (err u108))
 (define-constant ERR_JOB_NOT_COMPLETED (err u109))
 
+(define-constant ERR_DEADLINE_NOT_REACHED (err u110))
+(define-constant ERR_JOB_ALREADY_EXPIRED (err u111))
+(define-constant DEFAULT_DEADLINE_BLOCKS u100)
+
 (define-data-var job-counter uint u0)
 
 (define-map jobs
@@ -294,4 +298,61 @@
 
 (define-read-only (get-total-jobs)
   (var-get job-counter)
+)
+
+(define-map job-deadlines
+  { job-id: uint }
+  { deadline-block: uint }
+)
+
+(define-private (is-job-expired (job-id uint))
+  (match (map-get? job-deadlines { job-id: job-id })
+    deadline-data (>= stacks-block-height (get deadline-block deadline-data))
+    false
+  )
+)
+
+(define-public (set-job-deadline (job-id uint) (deadline-blocks uint))
+  (let
+    (
+      (job (unwrap! (map-get? jobs { job-id: job-id }) ERR_JOB_NOT_FOUND))
+      (deadline-block (+ stacks-block-height deadline-blocks))
+    )
+    (asserts! (is-eq tx-sender (get employer job)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get status job) "open") ERR_JOB_ALREADY_ASSIGNED)
+    (asserts! (> deadline-blocks u0) ERR_INVALID_AMOUNT)
+    (ok (map-set job-deadlines { job-id: job-id } { deadline-block: deadline-block }))
+  )
+)
+
+(define-public (claim-expired-refund (job-id uint))
+  (let
+    (
+      (job (unwrap! (map-get? jobs { job-id: job-id }) ERR_JOB_NOT_FOUND))
+      (escrow (unwrap! (map-get? escrow-funds { job-id: job-id }) ERR_INSUFFICIENT_FUNDS))
+    )
+    (asserts! (is-eq tx-sender (get employer job)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get status job) "open") ERR_JOB_ALREADY_ASSIGNED)
+    (asserts! (is-job-expired job-id) ERR_DEADLINE_NOT_REACHED)
+    (let
+      (
+        (refund-amount (get amount escrow))
+      )
+      (try! (as-contract (stx-transfer? refund-amount tx-sender (get employer job))))
+      (map-delete escrow-funds { job-id: job-id })
+      (map-delete job-deadlines { job-id: job-id })
+      (map-set jobs { job-id: job-id }
+        (merge job { status: "expired" })
+      )
+      (ok refund-amount)
+    )
+  )
+)
+
+(define-read-only (get-job-deadline (job-id uint))
+  (map-get? job-deadlines { job-id: job-id })
+)
+
+(define-read-only (is-job-deadline-reached (job-id uint))
+  (is-job-expired job-id)
 )
