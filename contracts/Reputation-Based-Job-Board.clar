@@ -356,3 +356,95 @@
 (define-read-only (is-job-deadline-reached (job-id uint))
   (is-job-expired job-id)
 )
+
+(define-map job-categories
+  { job-id: uint }
+  { 
+    category: (string-ascii 50),
+    skills: (list 5 (string-ascii 30)),
+    difficulty-level: uint
+  }
+)
+
+(define-map category-jobs
+  { category: (string-ascii 50) }
+  { job-ids: (list 100 uint) }
+)
+
+(define-map skill-jobs
+  { skill: (string-ascii 30) }
+  { job-ids: (list 200 uint) }
+)
+
+(define-private (add-job-to-category (job-id uint) (category (string-ascii 50)))
+  (let
+    (
+      (existing-jobs (default-to 
+        { job-ids: (list) } 
+        (map-get? category-jobs { category: category })
+      ))
+      (updated-list (unwrap! (as-max-len? (append (get job-ids existing-jobs) job-id) u100) (err u999)))
+    )
+    (ok (map-set category-jobs { category: category }
+      { job-ids: updated-list }
+    ))
+  )
+)
+
+(define-private (add-job-to-skills (job-id uint) (skills (list 5 (string-ascii 30))))
+  (fold add-job-to-skill skills (ok job-id))
+)
+
+(define-private (add-job-to-skill (skill (string-ascii 30)) (result (response uint uint)))
+  (let
+    (
+      (job-id (try! result))
+      (existing-jobs (default-to 
+        { job-ids: (list) } 
+        (map-get? skill-jobs { skill: skill })
+      ))
+    )
+    (map-set skill-jobs { skill: skill }
+      { job-ids: (unwrap! (as-max-len? (append (get job-ids existing-jobs) job-id) u200) (err u999)) }
+    )
+    (ok job-id)
+  )
+)
+
+(define-public (post-categorized-job 
+  (title (string-ascii 100)) 
+  (description (string-ascii 500)) 
+  (budget uint) 
+  (category (string-ascii 50)) 
+  (skills (list 5 (string-ascii 30))) 
+  (difficulty-level uint))
+  (let
+    (
+      (job-creation-result (try! (post-job title description budget)))
+      (job-id job-creation-result)
+    )
+    (asserts! (and (>= difficulty-level u1) (<= difficulty-level u5)) ERR_INVALID_RATING)
+    (map-set job-categories { job-id: job-id }
+      {
+        category: category,
+        skills: skills,
+        difficulty-level: difficulty-level
+      }
+    )
+    (try! (add-job-to-category job-id category))
+    (try! (add-job-to-skills job-id skills))
+    (ok job-id)
+  )
+)
+
+(define-read-only (get-job-category (job-id uint))
+  (map-get? job-categories { job-id: job-id })
+)
+
+(define-read-only (get-jobs-by-category (category (string-ascii 50)))
+  (map-get? category-jobs { category: category })
+)
+
+(define-read-only (get-jobs-by-skill (skill (string-ascii 30)))
+  (map-get? skill-jobs { skill: skill })
+)
