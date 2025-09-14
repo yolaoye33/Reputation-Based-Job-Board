@@ -448,3 +448,102 @@
 (define-read-only (get-jobs-by-skill (skill (string-ascii 30)))
   (map-get? skill-jobs { skill: skill })
 )
+
+
+(define-map job-milestones
+  { job-id: uint, milestone-id: uint }
+  {
+    description: (string-ascii 200),
+    amount: uint,
+    status: (string-ascii 20),
+    created-at: uint,
+    completed-at: (optional uint)
+  }
+)
+
+(define-map milestone-counters
+  { job-id: uint }
+  { count: uint }
+)
+
+(define-private (get-next-milestone-id (job-id uint))
+  (let
+    (
+      (current-count (default-to { count: u0 } (map-get? milestone-counters { job-id: job-id })))
+      (new-count (+ (get count current-count) u1))
+    )
+    (map-set milestone-counters { job-id: job-id } { count: new-count })
+    new-count
+  )
+)
+
+(define-private (sum-amounts (amount uint) (total uint))
+  (+ total amount)
+)
+
+(define-public (create-milestone-job (title (string-ascii 100)) (description (string-ascii 500)) (milestone-descriptions (list 5 (string-ascii 200))) (milestone-amounts (list 5 uint)))
+  (let
+    (
+      (total-budget (fold sum-amounts milestone-amounts u0))
+      (job-creation-result (try! (post-job title description total-budget)))
+      (job-id job-creation-result)
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq (len milestone-descriptions) (len milestone-amounts)) ERR_INVALID_AMOUNT)
+    (try! (create-milestones-batch job-id milestone-descriptions milestone-amounts current-block))
+    (ok job-id)
+  )
+)
+
+(define-private (create-milestones-batch (job-id uint) (descriptions (list 5 (string-ascii 200))) (amounts (list 5 uint)) (block uint))
+  (begin
+    (asserts! (> (len descriptions) u0) ERR_INVALID_AMOUNT)
+    (let
+      (
+        (desc-1 (default-to "" (element-at descriptions u0)))
+        (desc-2 (default-to "" (element-at descriptions u1)))
+        (desc-3 (default-to "" (element-at descriptions u2)))
+        (amount-1 (default-to u0 (element-at amounts u0)))
+        (amount-2 (default-to u0 (element-at amounts u1)))
+        (amount-3 (default-to u0 (element-at amounts u2)))
+      )
+      (if (> (len descriptions) u0) (map-set job-milestones { job-id: job-id, milestone-id: (get-next-milestone-id job-id) }
+        { description: desc-1, amount: amount-1, status: "pending", created-at: block, completed-at: none }) true)
+      (if (> (len descriptions) u1) (map-set job-milestones { job-id: job-id, milestone-id: (get-next-milestone-id job-id) }
+        { description: desc-2, amount: amount-2, status: "pending", created-at: block, completed-at: none }) true)
+      (if (> (len descriptions) u2) (map-set job-milestones { job-id: job-id, milestone-id: (get-next-milestone-id job-id) }
+        { description: desc-3, amount: amount-3, status: "pending", created-at: block, completed-at: none }) true)
+      (ok true)
+    )
+  )
+)
+
+(define-public (complete-milestone (job-id uint) (milestone-id uint))
+  (let
+    (
+      (job (unwrap! (map-get? jobs { job-id: job-id }) ERR_JOB_NOT_FOUND))
+      (milestone (unwrap! (map-get? job-milestones { job-id: job-id, milestone-id: milestone-id }) ERR_JOB_NOT_FOUND))
+      (freelancer (unwrap! (get freelancer job) ERR_JOB_NOT_ASSIGNED))
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq tx-sender (get employer job)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get status job) "assigned") ERR_JOB_NOT_ASSIGNED)
+    (asserts! (is-eq (get status milestone) "pending") ERR_JOB_ALREADY_ASSIGNED)
+    (try! (as-contract (stx-transfer? (get amount milestone) tx-sender freelancer)))
+    (map-set job-milestones { job-id: job-id, milestone-id: milestone-id }
+      (merge milestone {
+        status: "completed",
+        completed-at: (some current-block)
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-job-milestone (job-id uint) (milestone-id uint))
+  (map-get? job-milestones { job-id: job-id, milestone-id: milestone-id })
+)
+
+(define-read-only (get-milestone-count (job-id uint))
+  (map-get? milestone-counters { job-id: job-id })
+)
