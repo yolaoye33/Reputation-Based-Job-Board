@@ -14,6 +14,11 @@
 (define-constant ERR_JOB_ALREADY_EXPIRED (err u111))
 (define-constant DEFAULT_DEADLINE_BLOCKS u100)
 
+(define-constant ERR_DISPUTE_EXISTS (err u112))
+(define-constant ERR_DISPUTE_NOT_FOUND (err u113))
+(define-constant ERR_DISPUTE_WINDOW_CLOSED (err u114))
+(define-constant MAX_DISPUTE_WINDOW u1000)
+
 (define-data-var job-counter uint u0)
 
 (define-map jobs
@@ -546,4 +551,81 @@
 
 (define-read-only (get-milestone-count (job-id uint))
   (map-get? milestone-counters { job-id: job-id })
+)
+
+(define-map job-disputes
+  { job-id: uint }
+  {
+    initiator: principal,
+    reason: (string-ascii 300),
+    initiated-at: uint,
+    status: (string-ascii 20)
+  }
+)
+
+(define-public (initiate-dispute (job-id uint) (reason (string-ascii 300)))
+  (let
+    (
+      (job (unwrap! (map-get? jobs { job-id: job-id }) ERR_JOB_NOT_FOUND))
+      (current-block stacks-block-height)
+    )
+    (asserts! (is-eq (get status job) "assigned") ERR_JOB_NOT_ASSIGNED)
+    (asserts! (or (is-eq tx-sender (get employer job)) 
+                  (is-eq tx-sender (unwrap! (get freelancer job) ERR_JOB_NOT_ASSIGNED))) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (map-get? job-disputes { job-id: job-id })) ERR_DISPUTE_EXISTS)
+    (ok (map-set job-disputes { job-id: job-id }
+      {
+        initiator: tx-sender,
+        reason: reason,
+        initiated-at: current-block,
+        status: "open"
+      }
+    ))
+  )
+)
+
+(define-public (resolve-dispute (job-id uint))
+  (let
+    (
+      (job (unwrap! (map-get? jobs { job-id: job-id }) ERR_JOB_NOT_FOUND))
+      (dispute (unwrap! (map-get? job-disputes { job-id: job-id }) ERR_DISPUTE_NOT_FOUND))
+      (escrow (unwrap! (map-get? escrow-funds { job-id: job-id }) ERR_INSUFFICIENT_FUNDS))
+      (freelancer (unwrap! (get freelancer job) ERR_JOB_NOT_ASSIGNED))
+      (employer (get employer job))
+      (current-block stacks-block-height)
+      (blocks-elapsed (- current-block (get created-at job)))
+      (refund-percentage (calculate-refund-percentage blocks-elapsed))
+      (refund-amount (/ (* (get amount escrow) refund-percentage) u100))
+      (freelancer-payment (- (get amount escrow) refund-amount))
+    )
+    (asserts! (is-eq (get status dispute) "open") ERR_JOB_ALREADY_ASSIGNED)
+    (asserts! (< (- current-block (get initiated-at dispute)) MAX_DISPUTE_WINDOW) ERR_DISPUTE_WINDOW_CLOSED)
+    (try! (as-contract (stx-transfer? refund-amount tx-sender employer)))
+    (try! (as-contract (stx-transfer? freelancer-payment tx-sender freelancer)))
+    (map-delete escrow-funds { job-id: job-id })
+    (map-set job-disputes { job-id: job-id }
+      (merge dispute { status: "resolved" })
+    )
+    (map-set jobs { job-id: job-id }
+      (merge job { status: "disputed" })
+    )
+    (ok { refund: refund-amount, payment: freelancer-payment })
+  )
+)
+
+(define-private (calculate-refund-percentage (blocks-elapsed uint))
+  (if (<= blocks-elapsed u50)
+    u90
+    (if (<= blocks-elapsed u150)
+      u70
+      (if (<= blocks-elapsed u300)
+        u50
+        u30
+      )
+    )
+  )
+)
+
+(define-read-only (get-dispute (job-id uint))
+  (map-get? job-disputes { job-id: job-id })
 )
