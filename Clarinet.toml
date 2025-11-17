@@ -9,6 +9,11 @@ requirements = []
 path = 'contracts/Reputation-Based-Job-Board.clar'
 clarity_version = 3
 epoch = 3.1
+[contracts.freelancer-availability]
+path = 'contracts/freelancer-availability.clar'
+clarity_version = 3
+epoch = 3.1
+
 [repl.analysis]
 passes = ['check_checker']
 
